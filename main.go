@@ -23,13 +23,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"go.mozilla.org/pkcs7"
 )
+
+const targetRole = "arn:aws:iam::611154891553:role/ec2_instance_role"
 
 var certs []*x509.Certificate
 
 var (
-	// iamClient *iam.Client
+	stsClient *sts.Client
 	ec2Client *ec2.Client
 )
 
@@ -39,6 +42,11 @@ type TokenRequest struct {
 }
 
 type TokenResponse struct {
+	Version         int    `json:"Version"`
+	AccessKeyId     string `json:"AccessKeyId"`
+	SecretAccessKey string `json:"SecretAccessKey"`
+	SessionToken    string `json:"SessionToken"`
+	Expiration      string `json:"Expiration"`
 }
 
 type InstanceIdentityDocument struct {
@@ -62,8 +70,9 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	//iamClient = iam.NewFromConfig(cfg)
+	stsClient = sts.NewFromConfig(cfg)
 	ec2Client = ec2.NewFromConfig(cfg)
+
 	// eu-central-1 certificate
 	// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/regions-certs.html
 	data := []byte(`-----BEGIN CERTIFICATE-----
@@ -159,22 +168,31 @@ func handleRequest(ctx context.Context, req events.LambdaFunctionURLRequest) (ev
 	tags, err := fetchInstanceTags(ctx, instanceDocument.InstanceID)
 	if err != nil {
 		return events.LambdaFunctionURLResponse{
-			StatusCode: 400,
+			StatusCode: 500,
 			Headers:    jsonHeaders(),
 			Body:       string(fmt.Sprintf("Failed to fetch instance tags: %v", err)),
 		}, nil
 	}
 	log.Println(tags)
 	// dynamic policy with project_ref
-
+	sessionPolicy := sessionPolicyTemplate(tags["Database"])
 	// mint token
-
-	//
-
+	stsSession, err := mintSession(ctx, instanceDocument.InstanceID, sessionPolicy)
+	if err != nil {
+		return events.LambdaFunctionURLResponse{
+			StatusCode: 500,
+			Headers:    jsonHeaders(),
+			Body:       string(fmt.Sprintf("Failed to fetch custom session: %v", err)),
+		}, nil
+	}
+	// build custom response to match expected response from credential-process
+	rsp := &TokenResponse{Version: 1, AccessKeyId: *stsSession.Credentials.AccessKeyId,
+		SecretAccessKey: *stsSession.Credentials.SecretAccessKey, SessionToken: *stsSession.Credentials.SessionToken, Expiration: stsSession.Credentials.Expiration.Format(time.RFC3339)}
+	c, _ := json.Marshal(rsp)
 	return events.LambdaFunctionURLResponse{
 		StatusCode: 200,
 		Headers:    jsonHeaders(),
-		Body:       string(verified),
+		Body:       string(c),
 	}, nil
 }
 
@@ -260,6 +278,36 @@ func fetchInstanceTags(ctx context.Context, instanceID string) (tags map[string]
 		tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 	}
 	return tags, nil
+}
+
+func mintSession(ctx context.Context, instanceID, sessionPolicy string) (role *sts.AssumeRoleOutput, err error) {
+	return stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
+		RoleArn:         aws.String(targetRole),
+		RoleSessionName: aws.String(fmt.Sprintf("temp-%s", instanceID)),
+		Policy:          aws.String(sessionPolicy),
+	})
+}
+
+func sessionPolicyTemplate(database string) string {
+	// policy that provides a subset of the permissions
+	// allowed by the assumed-role, in this case, limiting
+	// s3 access to a resource path with a prefix
+	return fmt.Sprintf(`{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:Get*",
+                "s3:List*"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::staaldraad/",
+                "arn:aws:s3:::staaldraad/%s/*"
+            ]
+        }
+    ]
+}`, database)
 }
 
 // extractPKCS7 pulls out raw DER bytes from PEM or raw DER input.
