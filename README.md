@@ -47,3 +47,68 @@ fi
 
 cat "${CREDS_FILE}"
 ```
+
+### example of permission limits
+
+"Parent" policy that is set on the role that gets assumed:
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:Get*"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::staaldraad/*"
+            ]
+        },
+        {
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::staaldraad"
+            ]
+        }
+    ]
+}
+```
+
+The session is assumed with the policy as
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:Get*"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::staaldraad/foo-bar/*"
+            ]
+        },
+        {
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::staaldraad"
+            ],
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": "foo-bar/*"
+                }
+            }
+        }
+    ]
+}
+```
+
+This ensures that the session credentials are only valid for listing and retrieving objects on the `foo-bar/*` prefix. This is despite the "parent" having more broad permissions. More about [session policies](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session).
