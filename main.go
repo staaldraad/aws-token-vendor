@@ -9,7 +9,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"mime/multipart"
 	"net/mail"
@@ -162,7 +161,6 @@ func handleRequest(ctx context.Context, req events.LambdaFunctionURLRequest) (ev
 			Body:       string(fmt.Sprintf("Failed to unmarshal identity document: %v", err)),
 		}, nil
 	}
-	log.Println(instanceDocument.InstanceID)
 
 	// fetch instance tags
 	tags, err := fetchInstanceTags(ctx, instanceDocument.InstanceID)
@@ -173,27 +171,36 @@ func handleRequest(ctx context.Context, req events.LambdaFunctionURLRequest) (ev
 			Body:       string(fmt.Sprintf("Failed to fetch instance tags: %v", err)),
 		}, nil
 	}
-	log.Println(tags)
-	// dynamic policy with project_ref
-	sessionPolicy := sessionPolicyTemplate(tags["Database"])
-	// mint token
-	stsSession, err := mintSession(ctx, instanceDocument.InstanceID, sessionPolicy)
-	if err != nil {
+
+	if project, ok := tags["project"]; !ok || project == "" {
 		return events.LambdaFunctionURLResponse{
 			StatusCode: 500,
 			Headers:    jsonHeaders(),
-			Body:       string(fmt.Sprintf("Failed to fetch custom session: %v", err)),
+			Body:       string(fmt.Sprintf("project tag not set on: %s", instanceDocument.InstanceID)),
+		}, nil
+	} else {
+		// dynamic policy with project_ref
+		sessionPolicy := sessionPolicyTemplate(project)
+		// mint token
+		stsSession, err := mintSession(ctx, instanceDocument.InstanceID, sessionPolicy)
+		if err != nil {
+			return events.LambdaFunctionURLResponse{
+				StatusCode: 500,
+				Headers:    jsonHeaders(),
+				Body:       string(fmt.Sprintf("Failed to fetch custom session: %v", err)),
+			}, nil
+		}
+		fmt.Printf("Session created for %s(%s)\n", instanceDocument.InstanceID, project)
+		// build custom response to match expected response from credential-process
+		rsp := &TokenResponse{Version: 1, AccessKeyId: *stsSession.Credentials.AccessKeyId,
+			SecretAccessKey: *stsSession.Credentials.SecretAccessKey, SessionToken: *stsSession.Credentials.SessionToken, Expiration: stsSession.Credentials.Expiration.Format(time.RFC3339)}
+		c, _ := json.Marshal(rsp)
+		return events.LambdaFunctionURLResponse{
+			StatusCode: 200,
+			Headers:    jsonHeaders(),
+			Body:       string(c),
 		}, nil
 	}
-	// build custom response to match expected response from credential-process
-	rsp := &TokenResponse{Version: 1, AccessKeyId: *stsSession.Credentials.AccessKeyId,
-		SecretAccessKey: *stsSession.Credentials.SecretAccessKey, SessionToken: *stsSession.Credentials.SessionToken, Expiration: stsSession.Credentials.Expiration.Format(time.RFC3339)}
-	c, _ := json.Marshal(rsp)
-	return events.LambdaFunctionURLResponse{
-		StatusCode: 200,
-		Headers:    jsonHeaders(),
-		Body:       string(c),
-	}, nil
 }
 
 // parseBody decodes the request body, handling base64 encoding that Lambda
@@ -239,19 +246,21 @@ func verifyInstanceDocument(document []byte) (verifiedInstanceDocument []byte, e
 	if err != nil {
 		return nil, fmt.Errorf("parsing PKCS#7: %v", err)
 	}
-	p7.Certificates = append(p7.Certificates, certs...)
+
+	// only check against the region cert for aws
+	p7.Certificates = certs
 	// --- Verify ---
-	// Build a pool from ONLY the embedded certs in the message
 	pool := x509.NewCertPool()
 	for _, c := range p7.Certificates {
 		pool.AddCert(c)
 	}
 	// This checks: signature is valid against the embedded cert
 	if err := p7.VerifyWithChain(pool); err != nil {
+		fmt.Printf("Verification failed for %s\n", document)
 		return nil, fmt.Errorf("verification failed: %v", err)
 	}
 
-	fmt.Printf("Verification successful")
+	fmt.Println("Verification successful")
 
 	content := p7.Content
 	if len(content) == 0 {
