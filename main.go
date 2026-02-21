@@ -297,7 +297,7 @@ func mintSession(ctx context.Context, instanceID, sessionPolicy string) (role *s
 	})
 }
 
-func sessionPolicyTemplate(database string) string {
+func sessionPolicyTemplate(project string) string {
 	// policy that provides a subset of the permissions
 	// allowed by the assumed-role, in this case, limiting
 	// s3 access to a resource path with a prefix
@@ -306,17 +306,25 @@ func sessionPolicyTemplate(database string) string {
     "Statement": [
         {
             "Action": [
-                "s3:Get*",
-                "s3:List*"
+                "s3:Get*"
             ],
             "Effect": "Allow",
             "Resource": [
-                "arn:aws:s3:::staaldraad/",
                 "arn:aws:s3:::staaldraad/%s/*"
             ]
+        },
+        {
+            "Action": "s3:ListBucket",
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::staaldraad",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": "%s/*"
+                }
+            }
         }
     ]
-}`, database)
+}`, project, project)
 }
 
 // extractPKCS7 pulls out raw DER bytes from PEM or raw DER input.
