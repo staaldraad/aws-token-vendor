@@ -6,6 +6,10 @@ This allows giving a subset of permissions, but using a shared role, which is us
 
 Currently this hardcodes for eu-central-1 as a PoC. In a real-world this would likely not run as a Lambda (cost when lots of tenants) but in something like Fargate. The service will run per region, allowing for validation of requests within that region only, playing nicer with sts and providing per region segregation for security and blast radius control.
 
+### Lambda permissions
+
+The lambda (or ECS task) must have permission to assume the target role, for sts to work (trust-policy.json). And in this particular case requires `ec2:DescribeTags` for all target ec2 instances in the region.
+
 ## Credential process
 
 Set the .aws/config to use a credential process
